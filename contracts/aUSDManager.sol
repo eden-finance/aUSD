@@ -8,10 +8,12 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 
 import "./aUSDToken.sol";
 import "@aave/core-v3/contracts/interfaces/IPool.sol";
+import {IAToken} from "@aave/core-v3/contracts/interfaces/IAToken.sol";
 
 contract aUSDManager is Ownable, ReentrancyGuard {
     ERC20PermitOwnable public aUSDTokenContract;
-    IERC20 public USDCToken;
+    IERC20 public immutable USDCToken;
+    IAToken public immutable aUSDCToken;
 
     address public constant EDEN_POOL_PROXY =
         0x0EB0E45d670e23Cd1E1A94eFDD26D93aFcA2CdFe;
@@ -22,12 +24,29 @@ contract aUSDManager is Ownable, ReentrancyGuard {
     event Deposited(
         address indexed user,
         uint256 usdcAmount,
-        uint256 aUSDMinted
+        uint256 aUSDMinted,
+        uint256 timestamp
     );
 
-    constructor(address _aUSDToken, address _usdcToken) Ownable(msg.sender) {
+    event Withdrawn(
+        address indexed user,
+        uint256 usdcAmount,
+        uint256 aUSDBurned,
+        uint256 timestamp
+    );
+
+    constructor(
+        address _aUSDToken,
+        address _usdcToken,
+        address _aUSDCToken
+    ) Ownable(msg.sender) {
+        require(_aUSDToken != address(0), "Invalid aUSD token address");
+        require(_usdcToken != address(0), "Invalid USDC token address");
+        require(_aUSDCToken != address(0), "Invalid aUSDC token address");
+
         aUSDTokenContract = ERC20PermitOwnable(_aUSDToken);
         USDCToken = IERC20(_usdcToken);
+        aUSDCToken = IAToken(_aUSDCToken);
     }
 
     /**
@@ -37,28 +56,83 @@ contract aUSDManager is Ownable, ReentrancyGuard {
     function deposit(uint256 amount) external nonReentrant {
         require(amount > 0, "amount must be a positive number");
 
-        // check allowance
         uint256 allowance = USDCToken.allowance(msg.sender, address(this));
         require(allowance >= amount, "insufficient allowance.");
 
-        // transfer USDC from msg.sender to address(this)
         bool sent = USDCToken.transferFrom(msg.sender, address(this), amount);
         require(sent, "transaction failed");
 
-        // allow IPool to spend USDC
+        uint256 initialATokenBalance = aUSDCToken.balanceOf(address(this));
+
         USDCToken.approve(EDEN_POOL_PROXY, amount);
 
-        IPool(EDEN_POOL_PROXY).supply(
-            address(USDCToken),
-            amount,
-            address(this),
-            POOL_REFERRAL_CODE
+        try
+            IPool(EDEN_POOL_PROXY).supply(
+                address(USDCToken),
+                amount,
+                address(this),
+                POOL_REFERRAL_CODE
+            )
+        {
+            // Verify we received the correct amount of aTokens
+            require(
+                aUSDCToken.balanceOf(address(this)) >=
+                    initialATokenBalance + amount,
+                "aToken minting failed"
+            );
+
+            aUSDTokenContract.mint(msg.sender, amount);
+            deposits[msg.sender] += amount;
+
+            emit Deposited(msg.sender, amount, amount, block.timestamp);
+        } catch {
+            revert("Pool supply failed");
+        }
+    }
+
+    /**
+     * @dev Withdraw USDC by burning aUSD
+     * @param amount Amount of aUSD to burn
+     */
+    function withdraw(uint256 amount) external nonReentrant {
+        require(amount > 0, "Amount must be positive");
+        require(deposits[msg.sender] >= amount, "Insufficient deposit");
+
+        require(
+            aUSDCToken.balanceOf(address(this)) >= amount,
+            "Insufficient aToken balance"
         );
 
-        // supply USDC to IPool
-        aUSDTokenContract.mint(msg.sender, amount);
-        deposits[msg.sender] += amount;
+        uint256 allowance = aUSDTokenContract.allowance(
+            msg.sender,
+            address(this)
+        );
+        require(allowance >= amount, "Not enough allowance to burn tokens");
 
-        emit Deposited(msg.sender, amount, amount);
+        aUSDTokenContract.burnFrom(msg.sender, amount);
+
+        require(
+            aUSDCToken.approve(EDEN_POOL_PROXY, amount),
+            "Pool approval failed"
+        );
+
+        try
+            IPool(EDEN_POOL_PROXY).withdraw(
+                address(USDCToken),
+                amount,
+                address(this)
+            )
+        {
+            require(
+                USDCToken.transfer(msg.sender, amount),
+                "USDC transfer failed"
+            );
+
+            deposits[msg.sender] -= amount;
+
+            emit Withdrawn(msg.sender, amount, amount, block.timestamp);
+        } catch {
+            revert("Pool withdrawal failed");
+        }
     }
 }

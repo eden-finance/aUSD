@@ -33,4 +33,9 @@ contract ERC20PermitOwnable is ERC20, ERC20Permit, Ownable {
     function burn(address from, uint256 amount) public onlyOwner {
         _burn(from, amount);
     }
+
+      function burnFrom(address account, uint256 amount) public virtual {
+        _spendAllowance(account, _msgSender(), amount);
+        _burn(account, amount);
+    }
 }

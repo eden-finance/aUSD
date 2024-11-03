@@ -20,7 +20,7 @@ npx hardhat verify --network assetchain-testnet 0x670141727B0E2d2CbBC6161CC23b38
 
 npx hardhat ignition deploy ignition/modules/aUSD.ts --network assetchain-testnet --verify --reset
 
-npx hardhat ignition deploy ignition/modules/aUSDManager.ts --network assetchain-testnet --verify
+npx hardhat ignition deploy ignition/modules/aUSDManager.ts --network assetchain-testnet --verify --reset
 
 npx hardhat run scripts/transfer-ownership.ts --network assetchain-testnet
 npx hardhat run scripts/deposit.ts --network assetchain-testnet
